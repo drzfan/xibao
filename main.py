@@ -1,33 +1,58 @@
-import asyncio
 import base64
 import os
+from contextlib import asynccontextmanager
 
 import pandas as pd
 import uvicorn
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.security import APIKeyCookie
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from playwright.async_api import async_playwright
 
-app = FastAPI()
-
-# --- Configuration ---
+# --- CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 
-# Ensure static folder exists
+# !!! CHANGE THIS PASSWORD !!!
+ADMIN_PASSWORD = "zhuping123"
+SESSION_TOKEN = "valid_session_token"
+
 if not os.path.exists(STATIC_DIR):
     os.makedirs(STATIC_DIR)
+
+
+# --- LIFESPAN MANAGER (SPEED OPTIMIZATION) ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("--> Launching Headless Browser (Keep-Alive)...")
+    async with async_playwright() as p:
+        # Launch browser once on startup to make generation instant
+        browser = await p.chromium.launch(
+            headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"]
+        )
+        app.state.browser = browser
+        yield
+        print("--> Closing Browser...")
+        await browser.close()
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 
-# --- Helper Functions ---
+# --- AUTH HELPERS ---
+def check_auth(request: Request):
+    token = request.cookies.get("session_id")
+    return token == SESSION_TOKEN
+
+
+# --- DATA HELPERS ---
 def get_image_base64(file_name):
-    """Encodes local images to Base64 so Playwright can render them without path issues."""
     path = os.path.join(BASE_DIR, file_name)
     if os.path.exists(path):
         with open(path, "rb") as img_file:
@@ -36,28 +61,55 @@ def get_image_base64(file_name):
 
 
 def load_data():
-    """Loads CSVs, skipping bad lines (like the extra comma error)."""
-    uni_path = os.path.join(BASE_DIR, "uni.csv")
-    name_path = os.path.join(BASE_DIR, "namelist.csv")
-
-    # on_bad_lines='skip' prevents crashes if a row has too many commas
     uni_df = pd.read_csv(
-        uni_path, encoding="utf-8", on_bad_lines="skip", engine="python"
+        os.path.join(BASE_DIR, "uni.csv"),
+        encoding="utf-8",
+        on_bad_lines="skip",
+        engine="python",
     )
     name_df = pd.read_csv(
-        name_path, encoding="utf-8", on_bad_lines="skip", engine="python"
+        os.path.join(BASE_DIR, "namelist.csv"),
+        encoding="utf-8",
+        on_bad_lines="skip",
+        engine="python",
     )
-
-    # Clean whitespace from headers
     uni_df.columns = uni_df.columns.str.strip()
     name_df.columns = name_df.columns.str.strip()
-
     return uni_df, name_df
 
 
-# --- Routes ---
+# --- ROUTES ---
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.post("/login")
+async def login(request: Request, password: str = Form(...)):
+    if password == ADMIN_PASSWORD:
+        response = RedirectResponse(url="/", status_code=303)
+        # Cookie lasts 7 days
+        response.set_cookie(key="session_id", value=SESSION_TOKEN, max_age=604800)
+        return response
+    return templates.TemplateResponse(
+        "login.html", {"request": request, "error": "Incorrect Password"}
+    )
+
+
+@app.get("/logout")
+async def logout():
+    response = RedirectResponse(url="/login")
+    response.delete_cookie("session_id")
+    return response
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    if not check_auth(request):
+        return RedirectResponse(url="/login")
+
     try:
         uni_df, name_df = load_data()
         return templates.TemplateResponse(
@@ -69,68 +121,81 @@ async def index(request: Request):
             },
         )
     except Exception as e:
-        return f"<h1>Startup Error</h1><p>{str(e)}</p>"
+        return f"Startup Error: {e}"
 
 
 @app.post("/generate", response_class=HTMLResponse)
 async def generate(
     request: Request, student_name: str = Form(...), uni_name: str = Form(...)
 ):
-    uni_df, name_df = load_data()
+    if not check_auth(request):
+        return RedirectResponse(url="/login")
 
-    # Find the specific rows
+    uni_df, name_df = load_data()
     s_match = name_df[name_df["NAME_CN"] == student_name]
     u_match = uni_df[uni_df["English Name"] == uni_name]
 
     if s_match.empty or u_match.empty:
-        return "Error: Student or University not found in CSV."
+        return "Error: Data not found."
 
-    s = s_match.iloc[0]
-    u = u_match.iloc[0]
+    s, u = s_match.iloc[0], u_match.iloc[0]
 
-    # Load SVG Template
-    svg_path = os.path.join(BASE_DIR, "xibaov1.svg")
-    with open(svg_path, "r", encoding="utf-8") as f:
+    # --- 1. PREPARE SVG CONTENT ---
+    with open(os.path.join(BASE_DIR, "xibaov1.svg"), "r", encoding="utf-8") as f:
         svg_content = f.read()
 
-    # 1. Inject Background Image (Base64)
-    # Ensure your file is named exactly 'xibaobackground.jpg'
+    # Inject Background
     bg_b64 = get_image_base64("xibaobackground.jpg")
     if bg_b64:
         svg_content = svg_content.replace(
             "xibaobackground.jpg", f"data:image/jpeg;base64,{bg_b64}"
         )
 
-    # 2. Replace Text Placeholders
-    svg_content = svg_content.replace("{{UNI_CN}}", str(u["Chinese Name"]))
-    svg_content = svg_content.replace("{{UNI_EN}}", str(u["English Name"]))
+    # --- 2. SMART TEXT SCALING LOGIC ---
+    uni_en_str = str(u["English Name"])
+    uni_cn_str = str(u["Chinese Name"])
+
+    # Heuristics: Only squash if longer than X characters
+    # English Threshold: 25 chars
+    if len(uni_en_str) > 25:
+        en_attr = 'textLength="1600" lengthAdjust="spacingAndGlyphs"'
+    else:
+        en_attr = ""  # Natural width
+
+    # Chinese Threshold: 15 chars (Chinese is wider)
+    if len(uni_cn_str) > 15:
+        cn_attr = 'textLength="1600" lengthAdjust="spacingAndGlyphs"'
+    else:
+        cn_attr = ""  # Natural width
+
+    # --- 3. REPLACE PLACEHOLDERS ---
+    # Attributes
+    svg_content = svg_content.replace("{{UNI_EN_ATTR}}", en_attr)
+    svg_content = svg_content.replace("{{UNI_CN_ATTR}}", cn_attr)
+
+    # Text Content
+    svg_content = svg_content.replace("{{UNI_CN}}", uni_cn_str)
+    svg_content = svg_content.replace("{{UNI_EN}}", uni_en_str)
     svg_content = svg_content.replace("{{NAME_CN}}", str(s["NAME_CN"]))
     svg_content = svg_content.replace("{{NAME_EN}}", f"{s['NAME_EN']} {s['FAM_NAME']}")
 
-    # 3. Render SVG to PNG using Playwright
     output_filename = f"cert_{s['ID']}.png"
     output_path = os.path.join(STATIC_DIR, output_filename)
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        # Scale 2.0 = High Resolution (Retina)
-        context = await browser.new_context(device_scale_factor=2.0)
-        page = await context.new_page()
+    # --- 4. FAST GENERATION ---
+    browser = request.app.state.browser
+    context = await browser.new_context(device_scale_factor=2.0)
+    page = await context.new_page()
 
-        # Load the SVG content directly into the browser page
-        await page.set_content(svg_content)
+    await page.set_content(svg_content)
+    await page.wait_for_timeout(50)
 
-        # Wait for any fonts/images to settle
-        await page.wait_for_timeout(200)
+    svg_element = await page.query_selector("svg")
+    if svg_element:
+        await svg_element.screenshot(path=output_path, type="png", omit_background=True)
 
-        # Select the <svg> element and take a screenshot
-        svg_element = await page.query_selector("svg")
-        if svg_element:
-            await svg_element.screenshot(
-                path=output_path, type="png", omit_background=True
-            )
-
-        await browser.close()
+    await page.close()
+    await context.close()
 
     return templates.TemplateResponse(
         "index.html",
@@ -144,5 +209,4 @@ async def generate(
 
 
 if __name__ == "__main__":
-    # This starts the server locally
     uvicorn.run(app, host="127.0.0.1", port=8000)

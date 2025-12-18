@@ -19,24 +19,20 @@
 
 
 <text
-    x="960"
-    y="1681"
-    class="center-text en-text"
-    font-size="169"
+    x="960" y="1650"
+    class="center-text cn-text"
+    font-size="160"
     text-anchor="middle"
-    textLength="1600"
-    lengthAdjust="spacingAndGlyphs">
+    {{UNI_CN_ATTR}}>
     {{UNI_CN}}
 </text>
 
 <text
-    x="960"
-    y="1824"
+    x="960" y="1824"
     class="center-text en-text"
     font-size="125"
     text-anchor="middle"
-    textLength="1600"
-    lengthAdjust="spacingAndGlyphs">
+    {{UNI_EN_ATTR}}>
     {{UNI_EN}}
 </text>
 
