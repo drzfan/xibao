@@ -17,7 +17,7 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 
 # !!! CHANGE THIS PASSWORD !!!
-ADMIN_PASSWORD = "zhuping123"
+ADMIN_PASSWORD = "secret_password_123"
 SESSION_TOKEN = "valid_session_token"
 
 if not os.path.exists(STATIC_DIR):
@@ -29,7 +29,8 @@ if not os.path.exists(STATIC_DIR):
 async def lifespan(app: FastAPI):
     print("--> Launching Headless Browser (Keep-Alive)...")
     async with async_playwright() as p:
-        # Launch browser once on startup to make generation instant
+        # Launch browser once on startup.
+        # --no-sandbox is crucial for Docker environments like Render
         browser = await p.chromium.launch(
             headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"]
         )
@@ -61,18 +62,18 @@ def get_image_base64(file_name):
 
 
 def load_data():
+    uni_path = os.path.join(BASE_DIR, "uni.csv")
+    name_path = os.path.join(BASE_DIR, "namelist.csv")
+
+    # Load CSVs, skipping bad lines
     uni_df = pd.read_csv(
-        os.path.join(BASE_DIR, "uni.csv"),
-        encoding="utf-8",
-        on_bad_lines="skip",
-        engine="python",
+        uni_path, encoding="utf-8", on_bad_lines="skip", engine="python"
     )
     name_df = pd.read_csv(
-        os.path.join(BASE_DIR, "namelist.csv"),
-        encoding="utf-8",
-        on_bad_lines="skip",
-        engine="python",
+        name_path, encoding="utf-8", on_bad_lines="skip", engine="python"
     )
+
+    # Clean headers
     uni_df.columns = uni_df.columns.str.strip()
     name_df.columns = name_df.columns.str.strip()
     return uni_df, name_df
@@ -144,7 +145,7 @@ async def generate(
     with open(os.path.join(BASE_DIR, "xibaov1.svg"), "r", encoding="utf-8") as f:
         svg_content = f.read()
 
-    # Inject Background
+    # Inject Background Image (prevents broken image icon)
     bg_b64 = get_image_base64("xibaobackground.jpg")
     if bg_b64:
         svg_content = svg_content.replace(
@@ -155,25 +156,24 @@ async def generate(
     uni_en_str = str(u["English Name"])
     uni_cn_str = str(u["Chinese Name"])
 
-    # Heuristics: Only squash if longer than X characters
-    # English Threshold: 25 chars
+    # Heuristic: If English name is > 25 chars, force squash to 1600px
     if len(uni_en_str) > 25:
         en_attr = 'textLength="1600" lengthAdjust="spacingAndGlyphs"'
     else:
         en_attr = ""  # Natural width
 
-    # Chinese Threshold: 15 chars (Chinese is wider)
+    # Heuristic: If Chinese name is > 15 chars, force squash to 1600px
     if len(uni_cn_str) > 15:
         cn_attr = 'textLength="1600" lengthAdjust="spacingAndGlyphs"'
     else:
         cn_attr = ""  # Natural width
 
     # --- 3. REPLACE PLACEHOLDERS ---
-    # Attributes
+    # Inject attributes first
     svg_content = svg_content.replace("{{UNI_EN_ATTR}}", en_attr)
     svg_content = svg_content.replace("{{UNI_CN_ATTR}}", cn_attr)
 
-    # Text Content
+    # Inject text content
     svg_content = svg_content.replace("{{UNI_CN}}", uni_cn_str)
     svg_content = svg_content.replace("{{UNI_EN}}", uni_en_str)
     svg_content = svg_content.replace("{{NAME_CN}}", str(s["NAME_CN"]))
@@ -182,17 +182,26 @@ async def generate(
     output_filename = f"cert_{s['ID']}.png"
     output_path = os.path.join(STATIC_DIR, output_filename)
 
-    # --- 4. FAST GENERATION ---
+    # --- 4. FAST GENERATION WITH LARGE VIEWPORT ---
     browser = request.app.state.browser
-    context = await browser.new_context(device_scale_factor=2.0)
+
+    # FIX: We set height to 3000 to accommodate your 2926px SVG without scrolling
+    context = await browser.new_context(
+        viewport={"width": 1920, "height": 3000}, device_scale_factor=2.0
+    )
     page = await context.new_page()
 
     await page.set_content(svg_content)
-    await page.wait_for_timeout(50)
+
+    # Wait for background image to fully load/render
+    await page.wait_for_timeout(500)
 
     svg_element = await page.query_selector("svg")
     if svg_element:
-        await svg_element.screenshot(path=output_path, type="png", omit_background=True)
+        # Timeout set to 60s to avoid premature cancellation
+        await svg_element.screenshot(
+            path=output_path, type="png", omit_background=True, timeout=60000
+        )
 
     await page.close()
     await context.close()
