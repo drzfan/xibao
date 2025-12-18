@@ -1,0 +1,93 @@
+<!doctype html>
+<html>
+    <head>
+        <title>Certificate Generator</title>
+        <style>
+            body {
+                font-family: sans-serif;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                background: #f0f2f5;
+                padding-top: 50px;
+            }
+            .box {
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+                width: 400px;
+            }
+            input {
+                width: 100%;
+                padding: 12px;
+                margin: 10px 0;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                box-sizing: border-box;
+            }
+            button {
+                width: 100%;
+                padding: 12px;
+                background: #007bff;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 16px;
+            }
+            button:hover {
+                background: #0056b3;
+            }
+            .preview {
+                margin-top: 20px;
+                text-align: center;
+            }
+            img {
+                max-width: 100%;
+                border: 1px solid #ddd;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>Generate Certificate</h2>
+            <form action="/generate" method="post">
+                <label>Student Name (Chinese)</label>
+                <input
+                    list="students"
+                    name="student_name"
+                    placeholder="Type to search..."
+                    required
+                />
+                <datalist id="students">
+                    {% for name in students %}
+                    <option value="{{ name }}">{% endfor %}</option>
+                </datalist>
+
+                <label>University (English)</label>
+                <input
+                    list="unis"
+                    name="uni_name"
+                    placeholder="Type to search..."
+                    required
+                />
+                <datalist id="unis">
+                    {% for uni in unis %}
+                    <option value="{{ uni }}">{% endfor %}</option>
+                </datalist>
+
+                <button type="submit">Generate PNG</button>
+            </form>
+
+            {% if image_url %}
+            <div class="preview">
+                <h3>Preview:</h3>
+                <img src="{{ image_url }}" />
+                <br /><br />
+                <a href="{{ image_url }}" download>Click to Download PNG</a>
+            </div>
+            {% endif %}
+        </div>
+    </body>
+</html>
