@@ -1,16 +1,15 @@
-# We use the official Playwright image which has Python + Browsers pre-installed
-FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+# We updated the version tag to match the latest Playwright Python library
+FROM mcr.microsoft.com/playwright/python:v1.57.0-jammy
 
 WORKDIR /app
 
-# Copy dependency list
 COPY requirements.txt .
 
-# Install dependencies (no need to install playwright browsers again, they are in the image)
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy all your code (main.py, svg, csvs, images)
+# Copy application code
 COPY . .
 
-# Start the server on port 10000 (Render's default)
+# Run the app
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
